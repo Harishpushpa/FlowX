@@ -1,18 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Login from "./components/Login";
 import ProjectPicker from "./components/ProjectPicker";
 import SwaggerSpecBar from "./components/SwaggerSpecBar";
 import FlowBuilder from "./components/FlowBuilder";
 import FlowRunHistory from "./components/FlowRunHistory";
-import GlobalTestDataBar from "./components/GlobalTestDataBar";
-import { clearAuth, getAuthHeader, getSavedUsername } from "./api";
+import { apiFetchJson, clearAuth, getAuthHeader, getSavedUsername } from "./api";
 import { WorkspaceProvider, useWorkspace } from "./context/WorkspaceContext";
+import { IconLogout, IconMoon, IconSun } from "./components/Icons";
 import "./App.css";
+import "./workspace.css";
 
 function WorkspaceApp({ user, onLogout }) {
   const {
     project,
-    endpoints,
+    projects,
     selectedFlow,
     switchProject,
     setSelectedFlow,
@@ -25,6 +26,23 @@ function WorkspaceApp({ user, onLogout }) {
       return "light";
     }
   });
+  const [queue, setQueue] = useState(null);
+
+  // Live run-queue status for the header (refreshes every 15s and after a run).
+  useEffect(() => {
+    let cancelled = false;
+    const loadQueue = () => apiFetchJson("/api/queue")
+      .then((data) => { if (!cancelled) setQueue(data); })
+      .catch(() => { if (!cancelled) setQueue(null); });
+    loadQueue();
+    const intervalId = window.setInterval(loadQueue, 15000);
+    window.addEventListener("flow-run-completed", loadQueue);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("flow-run-completed", loadQueue);
+    };
+  }, [project]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -44,223 +62,129 @@ function WorkspaceApp({ user, onLogout }) {
     onLogout();
   }
 
-  const endpointCount = endpoints.length;
+  const queueBusy = (queue?.activeRuns || 0) > 0 || (queue?.queuedRuns || 0) > 0;
+  const queueLabel = queue
+    ? `Queue ${queue.activeRuns}/${queue.maxConcurrentRuns}${queue.queuedRuns > 0 ? ` · ${queue.queuedRuns} waiting` : ""}`
+    : "";
 
   return (
-    <div className="app app--workspace">
-      <header className="workspace-header">
-        <div className="workspace-brand">
-          <span className="brand-mark" />
-
-          <div>
-            <div className="brand-name">Flow Builder</div>
-            <div className="brand-subtitle">
-              API testing workspace
-            </div>
-          </div>
+    <div className="app app--workspace wb-app">
+      <header className="wb-topbar">
+        <div className="wb-brand">
+          <span className="wb-brand-mark" aria-hidden="true" />
+          <span>Flow Builder</span>
         </div>
 
-        <div className="workspace-header-center">
-          <div className="workspace-breadcrumb">
-            <span>Workspace</span>
-            <span className="breadcrumb-separator">/</span>
-            <strong>
-              {project || "Select a project"}
-            </strong>
-          </div>
-        </div>
+        <span className="wb-topbar-sep" aria-hidden="true" />
 
-        <div className="workspace-actions">
-          <div className="connection-status">
-            <span className="status-dot" />
-            <span>Connected</span>
-          </div>
+        <ProjectPicker />
+        <SwaggerSpecBar />
 
-          <div className="user-menu-pill">
-            <span className="user-avatar">
-              {String(user).slice(0, 1).toUpperCase()}
-            </span>
+        {queue && project && (
+          <span className="wb-chip wb-chip--static" title="Runs using the execution queue (active / maximum)">
+            <span className={`wb-status-dot ${queueBusy ? "wb-status-dot--live" : ""}`} aria-hidden="true" />
+            {queueLabel}
+          </span>
+        )}
 
-            <span className="user-name">
-              {user}
-            </span>
-          </div>
+        <div className="wb-topbar-spacer" />
 
-          <button
-            type="button"
-            className="theme-toggle-btn"
-            title={
-              theme === "dark"
-                ? "Switch to light theme"
-                : "Switch to dark theme"
-            }
-            aria-label={
-              theme === "dark"
-                ? "Switch to light theme"
-                : "Switch to dark theme"
-            }
-            onClick={() =>
-              setTheme((current) =>
-                current === "dark"
-                  ? "light"
-                  : "dark"
-              )
-            }
-          >
-            <span
-              className="theme-toggle-icon"
-              aria-hidden="true"
-            >
-              {theme === "dark" ? "☀" : "☾"}
-            </span>
+        <button
+          type="button"
+          className="wb-icon-btn"
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+        >
+          {theme === "dark" ? <IconSun /> : <IconMoon />}
+        </button>
 
-            <span className="theme-toggle-label">
-              {theme === "dark" ? "Light" : "Dark"}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className="header-icon-btn"
-            title="Log out"
-            onClick={handleLogout}
-          >
-            ↪
-          </button>
-        </div>
+        <UserMenu user={user} onLogout={handleLogout} />
       </header>
 
-      <main className="workspace-body">
-        <section className="workspace-toolbar">
-          <div className="project-context">
-            <div className="toolbar-eyebrow">
-              CURRENT PROJECT
-            </div>
-
-            <ProjectPicker />
-          </div>
-
-          <div className="toolbar-divider" />
-
-          <div className="workspace-metrics">
-            <div className="metric-card">
-              <span className="metric-icon">◈</span>
-
-              <div>
-                <span className="metric-label">
-                  Swagger
-                </span>
-
-                <strong>
-                  {endpointCount
-                    ? `${endpointCount} endpoints`
-                    : "Not loaded"}
-                </strong>
-              </div>
-            </div>
-
-            <div className="metric-card">
-              <span className="metric-icon">◇</span>
-
-              <div>
-                <span className="metric-label">
-                  Workspace
-                </span>
-
-                <strong>
-                  {project
-                    ? "Ready"
-                    : "Choose project"}
-                </strong>
-              </div>
-            </div>
-          </div>
-
-          <div className="toolbar-spacer" />
-
-          <SwaggerSpecBar />
-        </section>
-
+      <main className="wb-body">
         {!project ? (
-          <section className="workspace-empty">
-            <div className="empty-hero-icon">
-              ⌁
-            </div>
-
-            <div className="empty-kicker">
-              READY WHEN YOU ARE
-            </div>
-
-            <h2>
-              Choose a project to start testing
-            </h2>
-
+          <section className="wb-welcome">
+            <h1>Choose a project</h1>
             <p>
-              Select an existing project or type a new
-              project name. Your flows, collections,
-              Swagger specs and test data stay organized
-              by project.
+              Flows, collections, API specs and test data are kept separately for each project.
+            </p>
+
+            {projects.length > 0 && (
+              <div className="wb-welcome-projects">
+                {projects.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    className="wb-btn"
+                    onClick={() => switchProject(item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <p className="wb-muted">
+              {projects.length > 0
+                ? "Or create a new one from the project menu at the top."
+                : "Use the project menu at the top to create your first project."}
             </p>
           </section>
         ) : (
-          <>
-            {/* PROJECT / SCHOOL BAR */}
-            <section className="workspace-context-strip">
-              <div className="context-title">
-                <span className="context-live-dot" />
-
-                <div>
-                  <strong>
-                    {project}
-                  </strong>
-
-                  <span>
-                    Project workspace
-                  </span>
-                </div>
-              </div>
-
-              <div className="context-help">
-                {endpointCount > 0 && (
-                  <span className="context-chip">
-                    {endpointCount} Swagger endpoints ready
-                  </span>
-                )}
-              </div>
-            </section>
-
-            
-
-            {/* FLOW BUILDER */}
-            <section className="builder-region">
-              <FlowBuilder />
-            </section>
-
-            {selectedFlow && (
-              <section className="history-region">
-                <div className="region-heading">
-                  <div>
-                    <span className="toolbar-eyebrow">
-                      EXECUTION CENTER
-                    </span>
-
-                    <h2>
-                      Run history
-                    </h2>
-                  </div>
-
-                  <span className="region-hint">
-                    Review results, diagnose failures
-                    and generate reports.
-                  </span>
-                </div>
-
-                <FlowRunHistory />
-              </section>
-            )}
-          </>
+          <FlowBuilder runPanel={selectedFlow ? <FlowRunHistory /> : null} />
         )}
       </main>
+    </div>
+  );
+}
+
+function UserMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function onDown(event) {
+      if (ref.current && !ref.current.contains(event.target)) setOpen(false);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="wb-user" ref={ref}>
+      <button
+        type="button"
+        className="wb-avatar"
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={`Signed in as ${user}`}
+        aria-label={`Account menu for ${user}`}
+      >
+        {String(user).slice(0, 1).toUpperCase()}
+      </button>
+
+      {open && (
+        <div className="wb-pop wb-user-menu" role="menu">
+          <div className="wb-user-name">
+            <span className="wb-muted">Signed in as</span>
+            <strong>{user}</strong>
+          </div>
+          <button type="button" role="menuitem" className="wb-menu-item" onClick={onLogout}>
+            <IconLogout size={14} />
+            Log out
+          </button>
+        </div>
+      )}
     </div>
   );
 }

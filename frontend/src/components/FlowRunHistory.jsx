@@ -563,7 +563,7 @@ function downloadTemplate(inputVariables, format) {
   URL.revokeObjectURL(url);
 }
 
-export default function FlowRunHistory() {
+export default function FlowRunHistory({ runRequest = null }) {
   const {
     project,
     selectedFlow: flow,
@@ -741,6 +741,12 @@ export default function FlowRunHistory() {
     if (!flow?._id || running) return;
 
     const aiEnabled = mode === "ai";
+    const selectedRows = bulkRows?.length ? bulkRows : globalTestData?.rows || [];
+    if (aiEnabled && selectedRows.length > 20 && !window.confirm(
+      `This AI run will test ${selectedRows.length} rows and may make several billed AI requests. Continue?`
+    )) {
+      return;
+    }
 
     setRunning(true);
     setRunningMode(mode);
@@ -788,6 +794,7 @@ export default function FlowRunHistory() {
       }
 
       setLastResult(data);
+      window.dispatchEvent(new Event("flow-run-completed"));
 
       if (data?._id && !Array.isArray(data.results)) {
         setExpandedRunId(data._id);
@@ -819,6 +826,15 @@ export default function FlowRunHistory() {
     setBulkFileName("");
     setBulkError("");
   }
+
+  // The "Normal Run" / "AI Run" buttons in the flow header ask for a run by
+  // passing a fresh { mode, nonce }. Ignore stale requests (e.g. when this
+  // panel remounts for another flow) so nothing runs by itself.
+  useEffect(() => {
+    if (!runRequest || Date.now() - runRequest.nonce > 3000) return;
+    handleRun(runRequest.mode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runRequest]);
 
   if (!flow) return null;
 
@@ -861,21 +877,23 @@ export default function FlowRunHistory() {
       <div className="flow-run-buttons">
         <button
           type="button"
-          onClick={() => handleRun("ai")}
-          disabled={running}
-          title="Grade each row/response with AI (step-level AI grading, scenario-based data-driven grading)"
-        >
-          {running && runningMode === "ai" ? "Running (AI)…" : "AI Run"}
-        </button>
-        <button
-          type="button"
           onClick={() => handleRun("normal")}
           disabled={running}
-          title="Just execute the flow's endpoints and check each step's own expected status — no AI"
+          title="Execute the flow and check its configured status rules. This does not use AI."
         >
           {running && runningMode === "normal" ? "Running…" : "Normal Run"}
         </button>
+        <button
+          type="button"
+          className="ghost-btn"
+          onClick={() => handleRun("ai")}
+          disabled={running}
+          title="Use AI to infer or judge test expectations. Large batches ask for confirmation first."
+        >
+          {running && runningMode === "ai" ? "Running (AI)…" : "AI Run"}
+        </button>
       </div>
+      <p className="run-guidance">Normal Run is the default for reliable day-to-day testing. AI Run is optional and confirms large batches.</p>
 
       {error && <p className="status error">{error}</p>}
 
@@ -902,27 +920,29 @@ export default function FlowRunHistory() {
       )}
 
       {inputVariables.length > 0 && (
-        <div className="flow-bulk-run">
-          <h4>Test data file</h4>
+        <details className="flow-bulk-run wb-disclosure" open={hasUploadedRows || undefined}>
+          <summary>Run from a file (optional)</summary>
 
           <p className="status">
-            Optional: upload CSV/Excel for this flow. This uses the same <strong>AI Run</strong> / <strong>Normal Run</strong> buttons above
-            (row-level scenarios aren't part of this upload, so <strong>Normal Run</strong> is usually what you want for it).
+            Upload a CSV or Excel file with one row per run, then use <strong>Normal Run</strong> above.
+            Row-level AI scenarios aren't part of this upload.
           </p>
 
           <div className="flow-bulk-upload-row">
             <button
               type="button"
+              className="wb-btn wb-btn--sm"
               onClick={() => downloadTemplate(inputVariables, "xlsx")}
             >
-              Download Excel template
+              Excel template
             </button>
 
             <button
               type="button"
+              className="wb-btn wb-btn--sm"
               onClick={() => downloadTemplate(inputVariables, "csv")}
             >
-              Download CSV template
+              CSV template
             </button>
 
             <input
@@ -943,12 +963,12 @@ export default function FlowRunHistory() {
           {hasUploadedRows && !bulkError && (
             <div className="flow-bulk-loaded">
               <span>{bulkRows.length} row(s) ready to run.</span>
-              <button type="button" onClick={clearUploadedRows} disabled={running}>
+              <button type="button" className="wb-btn wb-btn--sm" onClick={clearUploadedRows} disabled={running}>
                 Clear
               </button>
             </div>
           )}
-        </div>
+        </details>
       )}
 
       <h4>Past runs</h4>

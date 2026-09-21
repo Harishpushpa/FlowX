@@ -7,6 +7,47 @@
 // copy-pasting values between requests.
 import { inferTestExpectations, judgeTestResult } from "./llm.js";
 
+const parsedTimeout = Number.parseInt(process.env.TEST_REQUEST_TIMEOUT_MS || "30000", 10);
+const REQUEST_TIMEOUT_MS = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 30000;
+const GET_RETRY_COUNT = Math.max(0, Number.parseInt(process.env.SAFE_GET_RETRIES || "1", 10) || 0);
+const parsedResponseLimit = Number.parseInt(process.env.MAX_TARGET_RESPONSE_BYTES || "2097152", 10);
+const MAX_TARGET_RESPONSE_BYTES = Number.isFinite(parsedResponseLimit) && parsedResponseLimit > 0
+  ? parsedResponseLimit
+  : 2097152;
+
+function isRetryableStatus(status) {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+// Only idempotent GET/HEAD requests are retried. Requests with a body are
+// never retried automatically, avoiding accidental duplicate side effects.
+async function fetchWithPolicy(url, options) {
+  const safeMethod = ["GET", "HEAD"].includes(options.method);
+  const attempts = safeMethod ? GET_RETRY_COUNT + 1 : 1;
+  let lastError;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (!safeMethod || !isRetryableStatus(response.status) || attempt === attempts - 1) return response;
+      // Consume the response before retrying so its connection can be reused.
+      await response.arrayBuffer();
+    } catch (error) {
+      lastError = error;
+      if (!safeMethod || attempt === attempts - 1) {
+        if (error.name === "AbortError") throw new Error(`Target API timed out after ${REQUEST_TIMEOUT_MS}ms`);
+        throw error;
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+  }
+  throw lastError || new Error("Target API request failed");
+}
+
 /**
  * Get a nested value from an object using dot / bracket path notation.
  * getByPath(obj, "data.user.token") or getByPath(obj, "items[0].id")
@@ -252,10 +293,17 @@ async function runStep(step, baseUrl, context, defaultHeaders = {}, extraHeaders
   };
 
   try {
-    const res = await fetch(url.toString(), fetchOpts);
+    const res = await fetchWithPolicy(url.toString(), fetchOpts);
     const status = res.status;
     const contentType = res.headers.get("content-type") || "";
+    const declaredLength = Number.parseInt(res.headers.get("content-length") || "0", 10);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_TARGET_RESPONSE_BYTES) {
+      throw new Error(`Target API response is larger than the ${MAX_TARGET_RESPONSE_BYTES} byte safety limit`);
+    }
     const rawText = await res.text();
+    if (Buffer.byteLength(rawText, "utf8") > MAX_TARGET_RESPONSE_BYTES) {
+      throw new Error(`Target API response is larger than the ${MAX_TARGET_RESPONSE_BYTES} byte safety limit`);
+    }
 
     let responseBody = rawText;
     if (contentType.includes("application/json")) {

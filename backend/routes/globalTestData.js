@@ -77,34 +77,58 @@ router.get("/", asyncHandler(async (req, res) => {
   res.json(data || null);
 }));
 
-// POST /api/global-test-data   body: { project, fileName, rows }
-// Upserts — a project has exactly one global sheet at a time, so
-// re-uploading replaces it rather than creating a second one.
+// POST /api/global-test-data
+//   body: { project, fileName?, rows?, scenarioFileName?, scenarios? }
+//
+// Partial upsert — a project still has exactly one global sheet document,
+// but the Test Data Excel and the Test Scenario Excel are saved
+// independently. Send only `rows` (+ fileName) to replace the test data and
+// leave the saved scenarios untouched; send only `scenarios`
+// (+ scenarioFileName) to replace the scenarios and leave the saved test
+// data untouched; send both to replace both. Whatever isn't sent is never
+// overwritten.
 router.post("/", asyncHandler(async (req, res) => {
   try {
     const { project, fileName, rows, scenarioFileName, scenarios } = req.body || {};
     if (!project) return res.status(400).json({ error: "project is required" });
-    if (!Array.isArray(rows) || rows.length === 0) {
-      return res.status(400).json({ error: "rows must be a non-empty array" });
+
+    const hasRows = rows !== undefined && rows !== null;
+    const hasScenarios = scenarios !== undefined && scenarios !== null;
+    if (!hasRows && !hasScenarios) {
+      return res.status(400).json({ error: "Send test data rows, test scenarios, or both." });
     }
 
-    validateUniqueColumns(rows, fileName || "Test data Excel");
+    const update = { project };
 
-    const scenarioRows = Array.isArray(scenarios) ? normalizeScenarioRows(scenarios) : [];
-    if (scenarioRows.length) validateUniqueColumns(scenarioRows, scenarioFileName || "Test scenario Excel");
+    if (hasRows) {
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return res.status(400).json({ error: "rows must be a non-empty array" });
+      }
+      validateUniqueColumns(rows, fileName || "Test data Excel");
+      update.fileName = fileName || "";
+      update.columns = deriveColumns(rows);
+      update.rows = rows;
+    }
 
-    const columns = deriveColumns(rows);
+    if (hasScenarios) {
+      if (!Array.isArray(scenarios)) {
+        return res.status(400).json({ error: "scenarios must be an array" });
+      }
+      const scenarioRows = normalizeScenarioRows(scenarios);
+      if (!scenarioRows.length) {
+        return res.status(400).json({ error: "Test scenario Excel must contain at least one row with a TC ID / test_id." });
+      }
+      validateUniqueColumns(scenarioRows, scenarioFileName || "Test scenario Excel");
+      update.scenarioFileName = scenarioFileName || "";
+      update.scenarios = scenarioRows;
+    }
+
+    const uploadedBy = req.user || req.headers["x-user"];
+    if (uploadedBy) update.uploadedBy = uploadedBy;
+
     const data = await GlobalTestData.findOneAndUpdate(
       { project },
-      {
-        project,
-        fileName: fileName || "",
-        columns,
-        rows,
-        scenarioFileName: scenarioFileName || "",
-        scenarios: scenarioRows,
-        uploadedBy: req.user || req.headers["x-user"] || undefined,
-      },
+      { $set: update },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
     res.status(201).json(data);

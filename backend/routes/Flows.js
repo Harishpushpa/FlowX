@@ -7,19 +7,22 @@ import FlowRun from "../models/FlowRun.js";
 import { runFlow, getStepTemplateVars } from "../services/flowEngine.js";
 import { ensureAiGradedSteps } from "../services/aiTestGrader.js";
 import { classifyScenarioColumn, analyzeBatchRun } from "../services/llm.js";
-import { generateFlowRestAssuredClass } from "../services/flowCodegen.js";
 import { buildJUnitXml, buildReportHtml } from "../services/flowReport.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
+import { runWithCapacity } from "../services/executionQueue.js";
 
 const router = express.Router();
 
-const MAX_BULK_ROWS = 500;
-// Same intent as testRunner.js's TOKEN_ALIASES / DYNAMIC_KEY_RE — anything
-// that looks like a secret gets redacted before we write it to FlowRun
-// history. FlowRunHistory.jsx already expects exactly the string
+const MAX_BULK_ROWS = Math.max(1, Number.parseInt(process.env.MAX_BULK_ROWS || "100", 10) || 100);
+// Anything that looks like a secret gets redacted before we write it to
+// FlowRun history. FlowRunHistory.jsx already expects exactly the string
 // "[redacted]" back (see reuseRun()).
 const SECRET_NAME_RE = /pass|secret|token|otp|pwd|apikey/i;
 const REDACTED = "[redacted]";
+const parsedStoredValueLimit = Number.parseInt(process.env.MAX_STORED_RESULT_CHARS || "50000", 10);
+const MAX_STORED_RESULT_CHARS = Number.isFinite(parsedStoredValueLimit) && parsedStoredValueLimit > 0
+  ? parsedStoredValueLimit
+  : 50000;
 
 /**
  * Resolves any not-yet-inferred aiGraded steps on this flow and persists
@@ -39,9 +42,54 @@ async function resolveAiGradedSteps(flow) {
 function maskContextForStorage(context) {
   const out = {};
   for (const [k, v] of Object.entries(context || {})) {
-    out[k] = SECRET_NAME_RE.test(k) ? REDACTED : v;
+    out[k] = SECRET_NAME_RE.test(k) ? REDACTED : maskValueForStorage(v, k);
   }
   return out;
+}
+
+function maskValueForStorage(value, key = "") {
+  if (SECRET_NAME_RE.test(String(key))) return REDACTED;
+  if (Array.isArray(value)) return value.map((item) => maskValueForStorage(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([nestedKey, nestedValue]) => [
+      nestedKey,
+      maskValueForStorage(nestedValue, nestedKey),
+    ]));
+  }
+  return value;
+}
+
+function compactStoredValue(value) {
+  if (value === undefined || value === null) return value;
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    serialized = String(value);
+  }
+  if (typeof serialized !== "string") serialized = String(value);
+  if (serialized.length <= MAX_STORED_RESULT_CHARS) return value;
+  return {
+    truncated: true,
+    preview: serialized.slice(0, MAX_STORED_RESULT_CHARS),
+    originalCharacters: serialized.length,
+  };
+}
+
+function prepareStepsForStorage(steps) {
+  return (steps || []).map((step) => ({
+    ...step,
+    requestSent: step.requestSent
+      ? {
+          ...step.requestSent,
+          headers: maskContextForStorage(step.requestSent.headers),
+          body: compactStoredValue(maskValueForStorage(step.requestSent.body)),
+        }
+      : step.requestSent,
+    responseBody: compactStoredValue(maskValueForStorage(step.responseBody)),
+    extracted: maskContextForStorage(step.extracted),
+    aiGrade: step.aiGrade ? maskValueForStorage(step.aiGrade) : step.aiGrade,
+  }));
 }
 
 function isValidId(id) {
@@ -73,15 +121,15 @@ router.get("/runs/:runId/report.junit.xml", asyncHandler(async (req, res) => {
 // behavior — FlowBuilder.jsx's sidebar fetches everything once and groups
 // client-side rather than re-fetching per collection).
 router.get("/", asyncHandler(async (req, res) => {
-  const { project, collection } = req.query;
+  const { project, collectionId } = req.query;
   if (!project) return res.status(400).json({ error: "project query param is required" });
 
   const filter = { project };
-  if (collection === "none") {
-    filter.collection = null;
-  } else if (collection) {
-    if (!isValidId(collection)) return res.status(400).json({ error: "Invalid collection id" });
-    filter.collection = collection;
+  if (collectionId === "none") {
+    filter.collectionId = null;
+  } else if (collectionId) {
+    if (!isValidId(collectionId)) return res.status(400).json({ error: "Invalid collection id" });
+    filter.collectionId = collectionId;
   }
 
   const flows = await Flow.find(filter).sort({ updatedAt: -1 }).lean();
@@ -91,7 +139,7 @@ router.get("/", asyncHandler(async (req, res) => {
 // POST /api/flows
 router.post("/", asyncHandler(async (req, res) => {
   try {
-    const { project, name, baseUrl, steps, inputVariables, defaultHeaders, collection } = req.body;
+    const { project, name, baseUrl, steps, inputVariables, defaultHeaders, collectionId } = req.body;
     if (!project || !name || !Array.isArray(steps) || steps.length === 0) {
       return res.status(400).json({ error: "project, name and at least one step are required" });
     }
@@ -115,7 +163,7 @@ router.post("/", asyncHandler(async (req, res) => {
         error: "baseUrl is required for relative step paths; use a full http(s) URL when baseUrl is empty.",
       });
     }
-    if (collection && !isValidId(collection)) {
+    if (collectionId && !isValidId(collectionId)) {
       return res.status(400).json({ error: "Invalid collection id" });
     }
     const flow = await Flow.create({
@@ -125,8 +173,8 @@ router.post("/", asyncHandler(async (req, res) => {
       steps,
       inputVariables: Array.isArray(inputVariables) ? inputVariables : [],
       defaultHeaders: defaultHeaders && typeof defaultHeaders === "object" ? defaultHeaders : {},
-      collection: collection || null,
-      createdBy: req.user?.username || req.headers["x-user"] || undefined,
+      collectionId: collectionId || null,
+      createdBy: req.user || undefined,
     });
     res.status(201).json(flow);
   } catch (err) {
@@ -139,8 +187,8 @@ router.post("/", asyncHandler(async (req, res) => {
 // string, or null (moves it back to Uncategorized).
 router.put("/:id", asyncHandler(async (req, res) => {
   if (!isValidId(req.params.id)) return res.status(400).json({ error: "Invalid flow id" });
-  const { name, baseUrl, steps, inputVariables, defaultHeaders, collection } = req.body;
-  if (collection && !isValidId(collection)) {
+  const { name, baseUrl, steps, inputVariables, defaultHeaders, collectionId } = req.body;
+  if (collectionId && !isValidId(collectionId)) {
     return res.status(400).json({ error: "Invalid collection id" });
   }
 
@@ -177,7 +225,7 @@ router.put("/:id", asyncHandler(async (req, res) => {
       ...(defaultHeaders !== undefined && {
         defaultHeaders: defaultHeaders && typeof defaultHeaders === "object" ? defaultHeaders : {},
       }),
-      ...(collection !== undefined && { collection: collection || null }),
+      ...(collectionId !== undefined && { collectionId: collectionId || null }),
     },
     { new: true, runValidators: true }
   );
@@ -218,6 +266,7 @@ router.get("/:id/runs", asyncHandler(async (req, res) => {
   res.json(runs);
 }));
 
+
 // ---------------------------------------------------------------------
 // Single run
 // ---------------------------------------------------------------------
@@ -243,7 +292,7 @@ router.post("/:id/run", asyncHandler(async (req, res) => {
   }
 
   const resolvedFlow = aiEnabled ? await resolveAiGradedSteps(flow) : flow;
-  const result = await runFlow(resolvedFlow, initialContext);
+  const result = await runWithCapacity(() => runFlow(resolvedFlow, initialContext));
 
   // req.user is set by basicAuth (middleware/auth.js) to the plain
   // username string itself, not an object — `req.user?.username` was
@@ -257,7 +306,7 @@ router.post("/:id/run", asyncHandler(async (req, res) => {
     initialContext: maskContextForStorage(initialContext),
     finalContext: maskContextForStorage(result.finalContext),
     overallSuccess: result.overallSuccess,
-    steps: result.steps,
+    steps: prepareStepsForStorage(result.steps),
     createdAt: new Date(),
   };
   // Build and save the AI report right away, by default, so a past run's
@@ -265,7 +314,6 @@ router.post("/:id/run", asyncHandler(async (req, res) => {
   runData.reportHtml = buildReportHtml(runData);
 
   const run = await FlowRun.create(runData);
-
   res.json(run);
 }));
 
@@ -450,7 +498,7 @@ router.post("/:id/run-bulk", asyncHandler(async (req, res) => {
 
     let flowResult;
     try {
-      flowResult = await runFlow(resolvedFlow, initialContext);
+      flowResult = await runWithCapacity(() => runFlow(resolvedFlow, initialContext));
     } catch (err) {
       flowResult = { overallSuccess: false, steps: [], finalContext: {}, error: err.message };
     }
@@ -463,7 +511,7 @@ router.post("/:id/run-bulk", asyncHandler(async (req, res) => {
       initialContext: maskContextForStorage(initialContext),
       finalContext: maskContextForStorage(flowResult.finalContext),
       overallSuccess: flowResult.overallSuccess,
-      steps: flowResult.steps,
+      steps: prepareStepsForStorage(flowResult.steps),
       batchLabel,
       rowIndex: i,
       testId: rowIds[i],
@@ -478,9 +526,9 @@ router.post("/:id/run-bulk", asyncHandler(async (req, res) => {
 
     results.push({
       rowIndex: i,
-      input: initialContext,
+      input: maskContextForStorage(initialContext),
       overallSuccess: flowResult.overallSuccess,
-      steps: flowResult.steps,
+      steps: rowRunData.steps,
       runId: run._id,
       testId: rowIds[i],
       testScenario: matchedScenarioRows.length ? matchedScenarioRows : null,
@@ -617,14 +665,14 @@ router.post("/test-step", asyncHandler(async (req, res) => {
       Array.isArray(flowSteps) && Number.isInteger(stepIndex) && stepIndex > 0 && flowSteps.length > stepIndex;
 
     if (hasPrereqs) {
-      const prereqResult = await runFlow(
+      const prereqResult = await runWithCapacity(() => runFlow(
         {
           baseUrl,
           defaultHeaders: defaultHeaders || {},
           steps: flowSteps.slice(0, stepIndex).map((s) => ({ ...s, stopOnFailure: false })),
         },
         runContext
-      );
+      ));
       runContext = prereqResult.finalContext;
       prerequisiteSteps.push(...prereqResult.steps);
 
@@ -657,52 +705,13 @@ router.post("/test-step", asyncHandler(async (req, res) => {
     // works on any {steps: [...]} shape, saved or not.
     const { steps: [resolvedStep] } = await ensureAiGradedSteps({ steps: [step] });
 
-    const result = await runFlow(
+    const result = await runWithCapacity(() => runFlow(
       { baseUrl, defaultHeaders: defaultHeaders || {}, steps: [{ ...resolvedStep, id: step.id || "preview", stopOnFailure: false }] },
       runContext
-    );
+    ));
     res.json({ ...result.steps[0], prerequisiteSteps, aiGraded: resolvedStep.aiGraded });
   } catch (err) {
     res.status(400).json({ error: err.message });
-  }
-}));
-
-// ---------------------------------------------------------------------
-// Generate RestAssured Java code from this flow and run it via Maven —
-// the bridge from the visual Flow builder into your existing AI-generated-
-// test pipeline. Reuses the SAME chaining data (extract rules) the JS
-// runner uses; nothing about the flow's logic changes, only which engine
-// executes it.
-// ---------------------------------------------------------------------
-
-// POST /api/flows/:id/generate-and-run   body: { rows?: [{...}] }  (omit rows for a single run with {})
-router.post("/:id/generate-and-run", asyncHandler(async (req, res) => {
-  if (!isValidId(req.params.id)) return res.status(400).json({ error: "Invalid flow id" });
-  const flow = await Flow.findById(req.params.id).lean();
-  if (!flow) return res.status(404).json({ error: "Flow not found" });
-
-  const rows = Array.isArray(req.body?.rows) && req.body.rows.length ? req.body.rows : [{}];
-  const needed = flow.inputVariables || [];
-  const missingCols = needed.filter((n) => !(n in (rows[0] || {})));
-  if (rows[0] && Object.keys(rows[0]).length && missingCols.length) {
-    return res.status(400).json({
-      error: `Row data is missing column(s) required by this flow: ${missingCols.join(", ")}`,
-    });
-  }
-
-  try {
-    const javaSource = generateFlowRestAssuredClass(flow, rows);
-    const { javaPath } = writeGeneratedFlowTests(javaSource);
-    const mavenResult = await runGeneratedMavenSuite(flow.baseUrl);
-
-    res.json({
-      generated: true,
-      javaPath,
-      rowsCompiled: rows.length,
-      ...mavenResult,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
 }));
 

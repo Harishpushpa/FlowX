@@ -75,6 +75,14 @@ const FlowRunSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Retain execution payloads for a bounded period. MongoDB's TTL monitor
+// deletes expired documents asynchronously; set RUN_HISTORY_RETENTION_DAYS=0
+// to retain history indefinitely.
+const retentionDays = Number.parseInt(process.env.RUN_HISTORY_RETENTION_DAYS || "90", 10);
+if (Number.isFinite(retentionDays) && retentionDays > 0) {
+  FlowRunSchema.index({ createdAt: 1 }, { expireAfterSeconds: retentionDays * 24 * 60 * 60 });
+}
+
 // Bind the schema to the REPORTS connection specifically, not the default
 // mongoose connection — this is why we can't use mongoose.model() directly.
 export default conn.model("FlowRun", FlowRunSchema);

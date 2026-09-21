@@ -16,36 +16,6 @@ const openai = new OpenAI({
 const MODEL = process.env.GENERATION_MODEL || "gpt-4o-mini";
 
 /**
- * Generates an answer grounded in retrieved context chunks.
- */
-export async function generateAnswer(question, contextChunks) {
-  const context = contextChunks
-    .map((c, i) => `[${i + 1}] (source: ${c.sourceDoc})\n${c.text}`)
-    .join("\n\n");
-
-  const systemPrompt =
-    "You are a helpful RAG assistant. " +
-    "Answer questions using only the provided context. " +
-    "If the answer is not present in the context, say you don't know. " +
-    "Do not make up information. " +
-    "Cite sources using [1], [2], etc. matching the context blocks.";
-
-  const userPrompt = `Context:\n${context}\n\nQuestion: ${question}`;
-
-  const response = await openai.chat.completions.create({
-    model: MODEL,
-    temperature: 0.2,
-    max_tokens: 500,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-  });
-
-  return response.choices[0]?.message?.content ?? "";
-}
-
-/**
  * Phase 1 of AI-graded testing: turn a test case (a plain-English
  * description and/or a partially-specified request) into a complete,
  * executable request definition plus what a passing response should look

@@ -25,8 +25,8 @@ router.get("/", asyncHandler(async (req, res) => {
 
   const collections = await Collection.find({ project }).sort({ name: 1 }).lean();
   const counts = await Flow.aggregate([
-    { $match: { project, collection: { $ne: null } } },
-    { $group: { _id: "$collection", count: { $sum: 1 } } },
+    { $match: { project, collectionId: { $ne: null } } },
+    { $group: { _id: "$collectionId", count: { $sum: 1 } } },
   ]);
   const countByCollection = new Map(counts.map((c) => [String(c._id), c.count]));
 
@@ -47,7 +47,7 @@ router.post("/", asyncHandler(async (req, res) => {
       project,
       name,
       description: description || "",
-      createdBy: req.user?.username || req.headers["x-user"] || undefined,
+      createdBy: req.user || req.headers["x-user"] || undefined,
     });
     res.status(201).json({ ...collection.toObject(), flowCount: 0 });
   } catch (err) {
@@ -72,7 +72,7 @@ router.put("/:id", asyncHandler(async (req, res) => {
       { new: true, runValidators: true }
     ).lean();
     if (!collection) return res.status(404).json({ error: "Collection not found" });
-    const flowCount = await Flow.countDocuments({ collection: collection._id });
+    const flowCount = await Flow.countDocuments({ collectionId: collection._id });
     res.json({ ...collection, flowCount });
   } catch (err) {
     if (err.code === 11000) {
@@ -122,7 +122,7 @@ router.delete(
     if (deleteFlows) {
       const result =
         await Flow.deleteMany({
-          collection:
+          collectionId:
             collection._id,
         });
 
@@ -134,12 +134,12 @@ router.delete(
       // do NOT delete flows.
       await Flow.updateMany(
         {
-          collection:
+          collectionId:
             collection._id,
         },
         {
           $set: {
-            collection: null,
+            collectionId: null,
           },
         }
       );

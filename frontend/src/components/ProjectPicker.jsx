@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { IconChevronDown, IconCheck, IconPlus, IconSearch } from "./Icons";
 
 export default function ProjectPicker() {
   const {
@@ -87,49 +88,24 @@ export default function ProjectPicker() {
   }
 
   return (
-    <div className="project-picker" ref={pickerRef}>
+    <div className="wb-pp" ref={pickerRef}>
       <button
         type="button"
-        className={`project-picker-trigger ${open ? "project-picker-trigger--open" : ""}`}
+        className={`wb-pp-trigger ${open ? "is-open" : ""}`}
         onClick={() => (open ? closePicker() : openPicker())}
         aria-haspopup="listbox"
         aria-expanded={open}
+        title="Switch project"
       >
-        <span className="project-picker-current">
-          <span className="project-picker-current-icon">
-            <span className="project-picker-status-dot" />
-          </span>
-
-          <span className="project-picker-current-text">
-            <span className="project-picker-current-name">
-              {project || "Select a project"}
-            </span>
-            <span className="project-picker-current-hint">
-              {project ? "Project workspace" : "Choose or create a project"}
-            </span>
-          </span>
-        </span>
-
-        <span
-          className={`project-picker-chevron ${open ? "project-picker-chevron--open" : ""}`}
-          aria-hidden="true"
-        >
-          ▾
-        </span>
+        <span className="wb-pp-dot" aria-hidden="true" />
+        <span className="wb-pp-name">{project || "Select a project"}</span>
+        <IconChevronDown size={14} />
       </button>
 
       {open && (
-        <div className="project-picker-menu" role="listbox" aria-label="Projects">
-          <div className="project-picker-menu-header">
-            <span>Projects</span>
-            <span className="project-picker-menu-count">
-              {projects.length}
-            </span>
-          </div>
-
-          <div className="project-picker-search-wrap">
-            <span className="project-picker-search-icon" aria-hidden="true">⌕</span>
-
+        <div className="wb-pop wb-pp-menu" role="listbox" aria-label="Projects">
+          <div className="wb-pp-search">
+            <IconSearch size={14} />
             <input
               ref={searchInputRef}
               type="text"
@@ -139,72 +115,43 @@ export default function ProjectPicker() {
                 setCreateError("");
               }}
               onKeyDown={(event) => {
+                if (event.key === "Escape") closePicker();
                 if (event.key === "Enter" && canCreate) {
                   event.preventDefault();
                   handleCreate();
                 }
               }}
-              placeholder="Search or create project..."
+              placeholder="Search or create a project"
               autoComplete="off"
-              aria-label="Search or create project"
+              aria-label="Search or create a project"
             />
-
-            {search && (
-              <button
-                type="button"
-                className="project-picker-search-clear"
-                onClick={() => {
-                  setSearch("");
-                  setCreateError("");
-                  searchInputRef.current?.focus();
-                }}
-                aria-label="Clear project search"
-              >
-                ×
-              </button>
-            )}
           </div>
 
           {projectsError && (
-            <div className="project-picker-menu-error">
-              {projectsError}
-              <button type="button" onClick={loadProjects}>Retry</button>
+            <div className="wb-pp-note wb-pp-note--error">
+              {projectsError}{" "}
+              <button type="button" className="wb-link" onClick={loadProjects}>Retry</button>
             </div>
           )}
 
-          <div className="project-picker-options">
+          <div className="wb-pp-options">
             {projectsLoading ? (
-              <div className="project-picker-menu-empty">
-                Loading projects...
-              </div>
+              <div className="wb-pp-note">Loading projects…</div>
             ) : (
               <>
                 {filteredProjects.map((item) => {
                   const selected = item === project;
-
                   return (
                     <button
                       type="button"
                       key={item}
                       role="option"
                       aria-selected={selected}
-                      className={`project-picker-option ${selected ? "project-picker-option--selected" : ""}`}
+                      className={`wb-pp-option ${selected ? "is-selected" : ""}`}
                       onClick={() => handleSelect(item)}
                     >
-                      <span className="project-picker-option-icon">
-                        <span className="project-picker-option-dot" />
-                      </span>
-
-                      <span className="project-picker-option-content">
-                        <span className="project-picker-option-name">{item}</span>
-                        <span className="project-picker-option-subtitle">
-                          Project workspace
-                        </span>
-                      </span>
-
-                      {selected && (
-                        <span className="project-picker-option-check">✓</span>
-                      )}
+                      <span className="wb-pp-option-name">{item}</span>
+                      {selected && <IconCheck size={14} />}
                     </button>
                   );
                 })}
@@ -212,41 +159,25 @@ export default function ProjectPicker() {
                 {canCreate && (
                   <button
                     type="button"
-                    className="project-picker-create-option"
+                    className="wb-pp-option wb-pp-create"
                     onClick={handleCreate}
                     disabled={creating}
                   >
-                    <span className="project-picker-create-icon">
-                      {creating ? "…" : "+"}
-                    </span>
-                    <span className="project-picker-create-content">
-                      <span className="project-picker-create-name">
-                        {creating ? "Creating project..." : `Create "${trimmedSearch}"`}
-                      </span>
-                      <span className="project-picker-create-subtitle">
-                        Start a separate project workspace
-                      </span>
+                    <IconPlus size={14} />
+                    <span className="wb-pp-option-name">
+                      {creating ? "Creating…" : `Create "${trimmedSearch}"`}
                     </span>
                   </button>
                 )}
 
-                {!filteredProjects.length && !canCreate && !projectsLoading && (
-                  <div className="project-picker-menu-empty">
-                    No projects available.
-                  </div>
+                {!filteredProjects.length && !canCreate && (
+                  <div className="wb-pp-note">Type a name to create your first project.</div>
                 )}
               </>
             )}
           </div>
 
-          {createError && (
-            <div className="project-picker-menu-error">{createError}</div>
-          )}
-
-          <div className="project-picker-menu-footer">
-            <span>{filteredProjects.length} matching</span>
-            <button type="button" onClick={closePicker}>Close</button>
-          </div>
+          {createError && <div className="wb-pp-note wb-pp-note--error">{createError}</div>}
         </div>
       )}
     </div>

@@ -35,6 +35,15 @@ const StepSchema = new mongoose.Schema(
     extract: { type: [ExtractRuleSchema], default: [] },
     expectedStatus: { type: [Number], default: [] },
     stopOnFailure: { type: Boolean, default: true },
+    // Explicit schema support is required; otherwise Mongoose drops saved
+    // AI grading settings during normal create/update operations.
+    aiGraded: {
+      enabled: { type: Boolean, default: false },
+      description: { type: String, default: "" },
+      expectedStatus: { type: Number },
+      checks: { type: [mongoose.Schema.Types.Mixed], default: [] },
+      inferredAt: { type: String },
+    },
   },
   { _id: false }
 );

@@ -21,30 +21,6 @@ lerna-debug.log*
 *.log
 activity.log
 
-# ==========================================
-# 3. React / Frontend Build Outputs
-# ==========================================
-dist/
-build/
-.vite/
-.next/
-out/
-
-# ==========================================
-# 4. Java & Maven Testing Framework
-# ==========================================
-target/
-*.class
-*.jar
-*.war
-*.ear
-
-# TestNG & Extent Reports Generated Output
-test-output/
-extent-report/
-target/extent-report/
-*.html
-
 # Auto-generated Test classes & XML (optional - if you regenerate every run)
 testing/src/test/java/tests/GeneratedApiTests.java
 testing/testng-generated.xml

@@ -1,5 +1,6 @@
 // server/server.js
 import "dotenv/config";
+import crypto from "crypto";
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -9,11 +10,12 @@ import projectsRouter from "./routes/projects.js";
 import flowsRouter from "./routes/Flows.js";
 import collectionsRouter from "./routes/collections.js";
 import globalTestDataRouter from "./routes/globalTestData.js";
-import flowBatchReportRouter from "./routes/flowBatchReport.js";
 import testFromSpecRouter from "./routes/testFromSpec.js";
 import swaggerSpecsRouter from "./routes/swaggerSpecs.js";
 import { basicAuth } from "./middleware/auth.js";
 import { getReportsConnection } from "./db/reportsConnection.js";
+import { logEvent } from "./utils/logger.js";
+import { beginQueueShutdown, getExecutionStats, waitForQueueIdle } from "./services/executionQueue.js";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -22,14 +24,40 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:5173";
 
 app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }));
 app.use(express.json({ limit: "5mb" }));
+app.use((req, res, next) => {
+  const requestId = req.get("x-request-id") || crypto.randomUUID();
+  const startedAt = Date.now();
+  req.requestId = requestId;
+  res.setHeader("x-request-id", requestId);
+  res.on("finish", () => {
+    // Only log failed requests (400 and above). Successful ones stay silent.
+    if (res.statusCode < 400) return;
+    logEvent(res.statusCode >= 500 ? "error" : "log", "request_failed", {
+      requestId,
+      method: req.method,
+      path: req.originalUrl.split("?")[0],
+      status: res.statusCode,
+      durationMs: Date.now() - startedAt,
+    });
+  });
+  next();
+});
 
-// Fixed Health Endpoint: reflects actual DB & OpenAI status
+// Health check: reflects actual DB & OpenAI status
 app.get("/api/health", (req, res) => {
+  const mainDatabaseReady = mongoose.connection.readyState === 1;
+  const reportsDatabaseReady = getReportsConnection().readyState === 1;
   res.json({
-    status: "ok",
-    mongoConnected: mongoose.connection.readyState === 1,
+    status: mainDatabaseReady && reportsDatabaseReady ? "ok" : "degraded",
+    mongoConnected: mainDatabaseReady,
+    reportsDatabaseConnected: reportsDatabaseReady,
     openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
   });
+});
+
+app.get("/api/readiness", (req, res) => {
+  const ready = mongoose.connection.readyState === 1 && getReportsConnection().readyState === 1;
+  res.status(ready ? 200 : 503).json({ ready });
 });
 
 app.use("/api/login", loginRouter);
@@ -37,6 +65,8 @@ app.use(basicAuth);
 
 app.use("/api/projects", projectsRouter);
 app.use("/api/flows", flowsRouter);
+// Live run-queue status shown in the header (active / max concurrent runs).
+app.get("/api/queue", (req, res) => res.json(getExecutionStats()));
 app.use("/api/collections", collectionsRouter);
 app.use("/api/global-test-data", globalTestDataRouter);
 // Swagger/OpenAPI URL parsing + saved-spec persistence — feeds the
@@ -44,11 +74,6 @@ app.use("/api/global-test-data", globalTestDataRouter);
 // picked from a real spec instead of typed by hand.
 app.use("/api/test-from-spec", testFromSpecRouter);
 app.use("/api/swagger-specs", swaggerSpecsRouter);
-// Stateless report formatter for a bulk/global multi-row Flow run — takes
-// the already-assembled batch of rows from the client and formats one
-// combined HTML/JUnit report, the same way the per-run report routes in
-// flows.js do for a single FlowRun.
-app.use("/api/flows/batch", flowBatchReportRouter);
 
 // --- 404 for anything that didn't match a route above ---
 app.use((req, res) => {
@@ -62,10 +87,10 @@ app.use((req, res) => {
 // process. This must be the LAST app.use() call — Express identifies an
 // error middleware by its 4-argument signature.
 app.use((err, req, res, next) => {
-  console.error(`[${new Date().toISOString()}] Unhandled error on ${req.method} ${req.originalUrl}:`, err);
+  logEvent("error", "request_failed", { requestId: req.requestId, method: req.method, path: req.originalUrl, message: err.message });
   if (res.headersSent) return next(err);
   res.status(err.status || 500).json({
-    error: "Internal server error",
+    error: err.expose ? err.message : "Internal server error",
     detail: process.env.NODE_ENV === "production" ? undefined : err.message,
   });
 });
@@ -78,7 +103,7 @@ app.use((err, req, res, next) => {
 // otherwise crash the whole process and take the tool down for every
 // concurrent user, not just whoever triggered it.
 process.on("unhandledRejection", (reason) => {
-  console.error(`[${new Date().toISOString()}] Unhandled promise rejection:`, reason);
+  logEvent("error", "unhandled_rejection", { message: reason?.message || String(reason) });
 });
 
 process.on("uncaughtException", (err) => {
@@ -86,9 +111,24 @@ process.on("uncaughtException", (err) => {
   // synchronous uncaught exception, so log and exit rather than keep
   // serving requests — run this behind a process manager (pm2, systemd,
   // Docker --restart) so it comes back up automatically.
-  console.error(`[${new Date().toISOString()}] Uncaught exception, shutting down:`, err);
+  logEvent("error", "uncaught_exception", { message: err.message });
   process.exit(1);
 });
+
+let httpServer;
+async function shutdown(signal) {
+  logEvent("log", "shutdown_started", { signal });
+  beginQueueShutdown();
+  if (httpServer) await new Promise((resolve) => httpServer.close(resolve));
+  await Promise.race([
+    waitForQueueIdle(),
+    new Promise((resolve) => setTimeout(resolve, 35000)),
+  ]);
+  await Promise.allSettled([mongoose.disconnect(), getReportsConnection().close()]);
+  process.exit(0);
+}
+process.once("SIGTERM", () => { shutdown("SIGTERM"); });
+process.once("SIGINT", () => { shutdown("SIGINT"); });
 
 async function start() {
   try {
@@ -101,8 +141,8 @@ async function start() {
     await getReportsConnection().asPromise();
     console.log("Connected to MongoDB Atlas (reports)");
 
-    app.listen(PORT, () => {
-      console.log(`Flow Builder API running on port ${PORT}`);
+    httpServer = app.listen(PORT, () => {
+      logEvent("log", "server_started", { port: PORT });
     });
   } catch (err) {
     console.error("Failed to start server:", err);

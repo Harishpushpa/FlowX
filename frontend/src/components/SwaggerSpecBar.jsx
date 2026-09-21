@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import SwaggerEndpointPicker from "./SwaggerEndpointPicker";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { IconApi, IconChevronDown, IconClose } from "./Icons";
 
 export default function SwaggerSpecBar() {
   const {
@@ -22,57 +23,57 @@ export default function SwaggerSpecBar() {
         setOpen(false);
       }
     }
+    function handleKey(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
 
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKey);
+    };
   }, [open]);
 
   useEffect(() => {
     setOpen(false);
   }, [project]);
 
-  const hasEndpoints = safeEndpoints.length > 0;
-  const label = !project
-    ? "Swagger / OpenAPI"
-    : hasEndpoints
-      ? `Swagger · ${safeEndpoints.length} endpoints`
-      : "Load Swagger / OpenAPI";
+  const count = safeEndpoints.length;
+  const hasEndpoints = count > 0;
+
+  if (!project) return null;
 
   return (
-    <div className="swagger-bar" ref={wrapRef}>
+    <div className="wb-spec" ref={wrapRef}>
       <button
         type="button"
-        className={`swagger-bar-toggle ${open ? "is-open" : ""}`}
+        className={`wb-chip ${open ? "is-open" : ""}`}
         onClick={() => setOpen((value) => !value)}
-        disabled={!project}
-        title={project ? "Load or switch the OpenAPI specification" : "Pick a project first"}
+        aria-expanded={open}
+        title="Load or switch the OpenAPI / Swagger specification"
       >
-        <span className={`swagger-bar-status ${hasEndpoints ? "ready" : ""}`} />
-        <span className="swagger-bar-copy">
-          <small>API SPEC</small>
-          <strong>{label}</strong>
-        </span>
-        <span className="swagger-bar-chevron">{open ? "⌃" : "⌄"}</span>
+        <IconApi size={14} />
+        <span>{hasEndpoints ? `${count} endpoint${count === 1 ? "" : "s"}` : "Load API spec"}</span>
+        {hasEndpoints && <span className="wb-status-dot" aria-label="Spec loaded" />}
+        <IconChevronDown size={14} />
       </button>
 
-      {open && project && (
-        <div className="swagger-bar-panel">
-          <div className="swagger-panel-head">
+      {open && (
+        <div className="wb-pop wb-spec-panel">
+          <div className="wb-pop-head">
             <div>
-              <span className="toolbar-eyebrow">API CONTRACT</span>
-              <h3>Swagger</h3>
-              <p>
-                Load a specification once, then use its endpoints directly in your flows.
-              </p>
+              <h3>API spec</h3>
+              <p>Load a Swagger / OpenAPI spec once, then pick its endpoints when adding steps.</p>
             </div>
-
             <button
               type="button"
-              className="swagger-close"
+              className="wb-icon-btn wb-icon-btn--sm"
               onClick={() => setOpen(false)}
               title="Close"
+              aria-label="Close"
             >
-              ×
+              <IconClose size={14} />
             </button>
           </div>
 

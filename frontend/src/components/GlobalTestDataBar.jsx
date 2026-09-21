@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { useWorkspace } from "../context/WorkspaceContext";
+import { IconChevronDown, IconTable } from "./Icons";
 
 function parseRowsFromFile(file) {
   return new Promise((resolve, reject) => {
@@ -234,7 +235,9 @@ export default function GlobalTestDataBar() {
   const scenarioInputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [showColumns, setShowColumns] = useState(false);
+  const wrapRef = useRef(null);
   const [pendingDataRows, setPendingDataRows] = useState(null);
   const [pendingDataFile, setPendingDataFile] = useState("");
   const [pendingScenarioRows, setPendingScenarioRows] = useState(null);
@@ -290,20 +293,31 @@ export default function GlobalTestDataBar() {
     if (file) await uploadPart(file, "scenario");
   }
 
-  async function saveBoth() {
-    if (!project || !pendingDataRows || !pendingScenarioRows) {
-      setError("Upload both Test Data Excel and Test Scenario Excel before saving.");
+  // Saves whichever file(s) were picked. Replacing only the Test Data Excel
+  // leaves the saved Test Scenario Excel exactly as it was, and vice versa.
+  async function savePending() {
+    if (!project || !hasPending) {
+      setError("Upload a Test Data Excel or a Test Scenario Excel before saving.");
       return;
     }
     setUploading(true);
     setError("");
     try {
-      await saveGlobalTestData(project, pendingDataFile, pendingDataRows, pendingScenarioFile, pendingScenarioRows);
+      const parts = {};
+      if (pendingDataRows) {
+        parts.fileName = pendingDataFile;
+        parts.rows = pendingDataRows;
+      }
+      if (pendingScenarioRows) {
+        parts.scenarioFileName = pendingScenarioFile;
+        parts.scenarios = pendingScenarioRows;
+      }
+      await saveGlobalTestData(project, parts);
       setPendingDataRows(null);
       setPendingScenarioRows(null);
       setPendingDataFile("");
       setPendingScenarioFile("");
-      setExpanded(false);
+      setOpen(false);
     } catch (err) {
       setError(err.message || "Could not save test data.");
     } finally {
@@ -319,6 +333,8 @@ export default function GlobalTestDataBar() {
       await clearGlobalTestData(project);
       setPendingDataRows(null);
       setPendingScenarioRows(null);
+      setPendingDataFile("");
+      setPendingScenarioFile("");
     } catch (err) {
       setError(err.message || "Could not clear test data.");
     } finally {
@@ -326,44 +342,149 @@ export default function GlobalTestDataBar() {
     }
   }
 
+  // Close the popover on outside click / Escape (uploads keep their pending
+  // state, so closing never loses a selected-but-unsaved file).
+  useEffect(() => {
+    if (!open) return undefined;
+    function onDown(event) {
+      if (wrapRef.current && !wrapRef.current.contains(event.target)) setOpen(false);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   if (!project) return null;
+
   const displayError = error || globalTestDataError;
   const savedScenarioCount = data?.scenarios?.length || 0;
+  const savedRowCount = data?.rows?.length || 0;
+  const busy = uploading || loading;
+  const hasPending = Boolean(pendingDataRows || pendingScenarioRows);
+  const readyToSave = hasPending;
+  let saveLabel = "Save test data";
+  if (pendingDataRows && pendingScenarioRows) saveLabel = "Save both files";
+  else if (pendingScenarioRows) saveLabel = "Save test scenarios";
+
+  let chipLabel = "Add test data";
+  if (loading) chipLabel = "Test data…";
+  else if (hasPending) chipLabel = "Test data · unsaved";
+  else if (data) chipLabel = `Test data · ${savedRowCount} row${savedRowCount === 1 ? "" : "s"}`;
 
   return (
-    <div className="global-test-data-bar">
-      <div className="global-test-data-summary">
-        <span className="global-test-data-icon">📄</span>
-        {loading ? <span className="status">Checking saved data…</span> : data ? (
-          <span>
-            <strong>{data.fileName || "Test data"}</strong> — {data.rows?.length || 0} data row(s), {data.columns?.length || 0} column(s)
-            {data.scenarioFileName ? <> · <strong>{data.scenarioFileName}</strong> — {savedScenarioCount} scenario row(s)</> : " · No scenario Excel uploaded"}
-          </span>
-        ) : <span className="status">Upload Test Data Excel and Test Scenario Excel for AI/data-driven testing.</span>}
-        {data && <button type="button" className="global-test-data-toggle" onClick={() => setExpanded((v) => !v)}>{expanded ? "Hide" : "Show"}</button>}
-      </div>
+    <div className="wb-data" ref={wrapRef}>
+      <button
+        type="button"
+        className={`wb-chip ${open ? "is-open" : ""}`}
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        title="Upload the Test Data and Test Scenario Excel files used for data-driven and AI runs"
+      >
+        <IconTable size={14} />
+        <span>{chipLabel}</span>
+        {hasPending ? (
+          <span className="wb-status-dot wb-status-dot--warn" aria-label="Unsaved uploads" />
+        ) : data ? (
+          <span className="wb-status-dot" aria-label="Test data saved" />
+        ) : null}
+        <IconChevronDown size={14} />
+      </button>
 
-      {expanded && data && (
-        <div className="global-test-data-columns">
-          <strong>Test Data columns:</strong>
-          {(data.columns || []).map((column) => <code key={column}>{column}</code>)}
-          <strong>AI scenario source:</strong> <code>{data.scenarioFileName || "Not uploaded"}</code>
+      <input ref={dataInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleDataUpload} disabled={busy} hidden />
+      <input ref={scenarioInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleScenarioUpload} disabled={busy} hidden />
+
+      {open && (
+        <div className="wb-pop wb-data-panel">
+          <div className="wb-pop-head">
+            <div>
+              <h3>Test data</h3>
+              <p>Used for data-driven runs and AI grading. Replace either file and save — the other one stays as it is.</p>
+            </div>
+          </div>
+
+          <ul className="wb-data-list">
+            <li className="wb-data-item">
+              <div className="wb-data-item-text">
+                <strong>Test data</strong>
+                <span className="wb-muted">
+                  {pendingDataFile
+                    ? `${pendingDataFile} — ready to save`
+                    : data
+                      ? `${data.fileName || "Saved"} — ${savedRowCount} row${savedRowCount === 1 ? "" : "s"}, ${data.columns?.length || 0} column${(data.columns?.length || 0) === 1 ? "" : "s"}`
+                      : "Not uploaded"}
+                </span>
+              </div>
+              <button type="button" className="wb-btn wb-btn--sm" onClick={() => dataInputRef.current?.click()} disabled={busy}>
+                {data || pendingDataFile ? "Replace" : "Upload"}
+              </button>
+            </li>
+
+            <li className="wb-data-item">
+              <div className="wb-data-item-text">
+                <strong>Test scenarios</strong>
+                <span className="wb-muted">
+                  {pendingScenarioFile
+                    ? `${pendingScenarioFile} — ready to save`
+                    : data?.scenarioFileName
+                      ? `${data.scenarioFileName} — ${savedScenarioCount} row${savedScenarioCount === 1 ? "" : "s"}`
+                      : "Not uploaded"}
+                </span>
+              </div>
+              <button type="button" className="wb-btn wb-btn--sm" onClick={() => scenarioInputRef.current?.click()} disabled={busy}>
+                {data?.scenarioFileName || pendingScenarioFile ? "Replace" : "Upload"}
+              </button>
+            </li>
+          </ul>
+
+          {data && (data.columns || []).length > 0 && (
+            <div className="wb-data-columns">
+              <button type="button" className="wb-link" onClick={() => setShowColumns((value) => !value)}>
+                {showColumns ? "Hide columns" : `Show ${data.columns.length} column${data.columns.length === 1 ? "" : "s"}`}
+              </button>
+              {showColumns && (
+                <div className="wb-data-column-list">
+                  {data.columns.map((column) => <code key={column}>{column}</code>)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {hasPending && !(pendingDataRows && pendingScenarioRows) && (
+            <p className="wb-help">
+              {pendingDataRows
+                ? (data?.scenarioFileName
+                    ? `Only the test data will change — ${data.scenarioFileName} stays saved.`
+                    : "Only the test data will be saved.")
+                : (data?.fileName
+                    ? `Only the test scenarios will change — ${data.fileName} stays saved.`
+                    : "Only the test scenarios will be saved.")}
+            </p>
+          )}
+
+          {displayError && <p className="wb-error" role="alert">{displayError}</p>}
+
+          {(readyToSave || data) && (
+            <div className="wb-pop-foot">
+              {data ? (
+                <button type="button" className="wb-btn wb-btn--quiet wb-btn--danger" onClick={handleClear} disabled={busy}>
+                  Clear saved data
+                </button>
+              ) : <span />}
+              {readyToSave && (
+                <button type="button" className="wb-btn wb-btn--primary" onClick={savePending} disabled={busy}>
+                  {uploading ? "Saving…" : saveLabel}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       )}
-
-      <div className="global-test-data-actions">
-        <input ref={dataInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleDataUpload} disabled={uploading || loading} style={{ display: "none" }} />
-        <input ref={scenarioInputRef} type="file" accept=".csv,.xlsx,.xls" onChange={handleScenarioUpload} disabled={uploading || loading} style={{ display: "none" }} />
-        <button type="button" onClick={() => dataInputRef.current?.click()} disabled={uploading || loading}>Upload Test Data</button>
-        <button type="button" onClick={() => scenarioInputRef.current?.click()} disabled={uploading || loading}>Upload Test Scenarios</button>
-        {(pendingDataRows || pendingScenarioRows) && (
-          <span className="status">{pendingDataFile ? `Data: ${pendingDataFile}` : "Data not selected"} · {pendingScenarioFile ? `Scenarios: ${pendingScenarioFile}` : "Scenarios not selected"}</span>
-        )}
-        {pendingDataRows && pendingScenarioRows && <button type="button" onClick={saveBoth} disabled={uploading || loading}>{uploading ? "Saving…" : "Save both"}</button>}
-        {data && <button type="button" className="ghost-btn" onClick={handleClear} disabled={uploading || loading}>Clear</button>}
-      </div>
-
-      {displayError && <p className="status error">{displayError}</p>}
     </div>
   );
 }

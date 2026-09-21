@@ -198,8 +198,26 @@ export function WorkspaceProvider({ children }) {
     }
   }, [isCurrentWorkspace]);
 
-  const saveGlobalTestData = useCallback(async (project, fileName, rows, scenarioFileName = "", scenarios = []) => {
+  // Saves the Test Data Excel and/or the Test Scenario Excel. Only the parts
+  // that are passed in are sent, so saving new test data alone keeps the
+  // previously saved scenarios (and vice versa).
+  //   saveGlobalTestData(project, { fileName, rows })                       // test data only
+  //   saveGlobalTestData(project, { scenarioFileName, scenarios })          // scenarios only
+  //   saveGlobalTestData(project, { fileName, rows, scenarioFileName, scenarios })  // both
+  const saveGlobalTestData = useCallback(async (project, parts = {}) => {
     if (!project) throw new Error("Pick a project first.");
+
+    const { fileName, rows, scenarioFileName, scenarios } = parts;
+    const body = { project };
+    if (rows) {
+      body.fileName = fileName || "";
+      body.rows = rows;
+    }
+    if (scenarios) {
+      body.scenarioFileName = scenarioFileName || "";
+      body.scenarios = scenarios;
+    }
+    if (!rows && !scenarios) throw new Error("Nothing to save — upload a file first.");
 
     const version = workspaceVersion.current;
     dispatch({ type: "GLOBAL_LOADING" });
@@ -208,7 +226,7 @@ export function WorkspaceProvider({ children }) {
       const saved = await apiFetchJson("/api/global-test-data", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ project, fileName, rows, scenarioFileName, scenarios }),
+        body: JSON.stringify(body),
       });
 
       if (isCurrentWorkspace(project, version)) {

@@ -1,11 +1,9 @@
 // server/routes/testFromSpec.js
 //
-// Trimmed down to just the Swagger/OpenAPI URL parser. This used to share
-// a file with the RAG test-generation routes (plan/run-plan/legacy run) —
-// those were removed along with the RAG feature, but /parse-url stays:
-// it's what SwaggerEndpointPicker.jsx calls (embedded inside FlowBuilder's
-// "Swagger" tab) to turn a spec URL into the endpoint list a Flow step
-// can be built from, complete with a pre-filled body template.
+// Swagger/OpenAPI URL parser. /parse-url is what SwaggerEndpointPicker.jsx
+// calls (embedded inside FlowBuilder's "Swagger" tab) to turn a spec URL
+// into the endpoint list a Flow step can be built from, complete with a
+// pre-filled body template.
 import express from "express";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import {

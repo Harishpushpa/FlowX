@@ -1,12 +1,11 @@
 // server/services/flowReport.js
 //
 // Turns an ALREADY-EXECUTED FlowRun (see models/FlowRun.js) into a
-// shareable report. Deliberately does NOT re-run anything through
-// mavenRunner.js/flowCodegen.js — those regenerate Java and re-hit the
-// live API, which has real side effects (re-login, re-create a student,
-// etc). A "generate report" click on a past run should be idempotent and
-// safe to click twice, so this reads step results straight off the
-// FlowRun document that was already saved.
+// shareable report. Deliberately does NOT re-run anything — re-hitting the
+// live API has real side effects (re-login, re-create a student, etc). A
+// "generate report" click on a past run should be idempotent and safe to
+// click twice, so this reads step results straight off the FlowRun
+// document that was already saved.
 //
 // Two output shapes, same input:
 //   - buildJUnitXml()  -> drops straight into Jenkins/GitHub Actions/GitLab
@@ -40,8 +39,7 @@ function safeJson(value) {
 /**
  * Builds a JUnit-XML testsuite from one FlowRun. Each step becomes one
  * <testcase>; a failed/errored step gets a <failure> child so CI systems
- * render it exactly like a failed unit test, with the same message they'd
- * show for a RestAssured/TestNG failure.
+ * render it exactly like a failed unit test.
  */
 export function buildJUnitXml(flowRun) {
   const steps = flowRun.steps || [];
@@ -367,7 +365,6 @@ export function buildReportHtml(flowRun) {
   const failed = executedSteps.filter((s) => !s.success).length;
   const skipped = steps.filter((s) => s.skipped).length;
   const passRate = executedSteps.length ? Math.round((passed / executedSteps.length) * 100) : 0;
-  const overallClass = flowRun.overallSuccess ? "pass" : "fail";
 
   const { groups, isGrouped } = splitStepsByRow(steps);
 

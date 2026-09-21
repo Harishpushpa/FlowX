@@ -18,6 +18,7 @@
 // changes. This file only changes how it's arranged on screen.
 import { useEffect, useMemo, useState } from "react";
 import { apiFetch } from "../api";
+import VariableInput from "./VariableInput";
 
 const VAR_TOKEN_RE = /\{\{(\w+)\}\}/g;
 const METHOD_COLOR = {
@@ -210,7 +211,7 @@ function KeyValueTable({
           ) : (
             <input className="kv-key" placeholder={keyPlaceholder} value={row.key} onChange={(e) => setKey(i, e.target.value)} />
           )}
-          <input className="kv-value" placeholder={valuePlaceholder} value={row.value} onChange={(e) => setRow(i, { value: e.target.value })} />
+          <VariableInput className="kv-value" placeholder={valuePlaceholder} value={row.value} onChange={(value) => setRow(i, { value })} />
           <div className="kv-row-tools">
             <InsertVariableButton knownVariables={insertableVars} onInsert={(v) => insertVar(i, v)} compact />
             <button type="button" className="kv-remove" title="Remove" onClick={() => removeRow(i)}>

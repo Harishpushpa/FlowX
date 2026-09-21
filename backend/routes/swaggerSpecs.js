@@ -62,7 +62,7 @@ router.post("/", asyncHandler(async (req, res) => {
         version: version || "",
         baseUrl: baseUrl || "",
         endpoints,
-        createdBy: req.user?.username || req.headers["x-user"] || undefined,
+        createdBy: req.user || req.headers["x-user"] || undefined,
       },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );

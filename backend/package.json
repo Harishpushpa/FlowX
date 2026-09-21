@@ -9,7 +9,7 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "ingest": "node scripts/ingest.js",
-    "test": "NODE_ENV=test node --experimental-vm-modules node_modules/.bin/jest",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --runInBand",
     "preinstall": "node scripts/check-licenses.js",
     "postinstall": "node scripts/check-licenses.js"
   },
